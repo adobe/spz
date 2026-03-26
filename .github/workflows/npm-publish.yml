@@ -1,0 +1,145 @@
+name: npm-publish
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  publish:
+    name: Build, publish to npm, and tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check release commit message
+        id: release_check
+        shell: bash
+        run: |
+          COMMIT_MSG="$(git log -1 --pretty=%B)"
+          echo "Commit message: $COMMIT_MSG"
+
+          if [[ "$COMMIT_MSG" =~ ^Release[[:space:]]+([^[:space:]]+)$ ]]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "release_version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        if: steps.release_check.outputs.should_release == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Read package metadata
+        if: steps.release_check.outputs.should_release == 'true'
+        id: pkg
+        shell: bash
+        run: |
+          PKG_NAME="$(node -p "require('./package.json').name")"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          REL_VERSION="${{ steps.release_check.outputs.release_version }}"
+
+          echo "name=$PKG_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+          if [[ "$PKG_VERSION" != "$REL_VERSION" ]]; then
+            echo "package.json version ($PKG_VERSION) does not match release commit version ($REL_VERSION)"
+            exit 1
+          fi
+
+      - name: Check npm version existence
+        if: steps.release_check.outputs.should_release == 'true'
+        id: npm_check
+        shell: bash
+        run: |
+          if npm view "${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "npm version already exists"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "npm version does not exist yet"
+          fi
+
+      - name: Check git tag existence on origin
+        if: steps.release_check.outputs.should_release == 'true'
+        id: tag_check
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.pkg.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "git tag already exists on origin"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "git tag does not exist on origin"
+          fi
+
+      - name: Setup Emscripten
+        if: steps.release_check.outputs.should_release == 'true' && steps.npm_check.outputs.exists != 'true'
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: "latest"
+          actions-cache-folder: "emsdk-cache"
+
+      - name: Install dependencies
+        if: steps.release_check.outputs.should_release == 'true' && steps.npm_check.outputs.exists != 'true'
+        run: npm ci
+
+      - name: Build WASM
+        if: steps.release_check.outputs.should_release == 'true' && steps.npm_check.outputs.exists != 'true'
+        run: |
+          emcmake cmake -B build-wasm \
+            -DSPZ_BUILD_EXTENSIONS=ON \
+            .
+          cmake --build build-wasm
+
+      - name: Check npm auth and package metadata
+        if: steps.release_check.outputs.should_release == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.ADOBE_BOT_NPM_TOKEN }}
+        run: |
+          echo "Package name: ${{ steps.pkg.outputs.name }}"
+          echo "Package version: ${{ steps.pkg.outputs.version }}"
+          echo "Git tag: ${{ steps.pkg.outputs.tag }}"
+          echo "Registry: $(npm config get registry)"
+          echo "npm exists: ${{ steps.npm_check.outputs.exists }}"
+          echo "tag exists: ${{ steps.tag_check.outputs.exists }}"
+          npm whoami
+          npm pack --dry-run
+
+      - name: Publish to npm
+        if: steps.release_check.outputs.should_release == 'true' && steps.npm_check.outputs.exists != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.ADOBE_BOT_NPM_TOKEN }}
+        run: npm publish --access public
+
+      - name: Create and push Git tag
+        if: steps.release_check.outputs.should_release == 'true' && steps.tag_check.outputs.exists != 'true'
+        shell: bash
+        run: |
+          TAG="${{ steps.pkg.outputs.tag }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
+      - name: Summary
+        if: steps.release_check.outputs.should_release == 'true'
+        run: |
+          echo "npm exists before workflow: ${{ steps.npm_check.outputs.exists }}"
+          echo "tag exists before workflow: ${{ steps.tag_check.outputs.exists }}"
+
+      - name: Skip non-release commit
+        if: steps.release_check.outputs.should_release != 'true'
+        run: echo "Commit message does not match release pattern; skipping."
