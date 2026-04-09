@@ -87,7 +87,7 @@ jobs:
         if: steps.release_check.outputs.should_release == 'true' && steps.npm_check.outputs.exists != 'true'
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: "latest"
+          version: "5.0.4"
           actions-cache-folder: "emsdk-cache"
 
       - name: Install dependencies
@@ -98,6 +98,7 @@ jobs:
         if: steps.release_check.outputs.should_release == 'true' && steps.npm_check.outputs.exists != 'true'
         run: |
           emcmake cmake -B build-wasm \
+            -DCMAKE_BUILD_TYPE=Release \
             -DSPZ_BUILD_EXTENSIONS=ON \
             .
           cmake --build build-wasm
