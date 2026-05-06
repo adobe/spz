@@ -1,6 +1,6 @@
 {
   "name": "@adobe/spz",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "WebAssembly module for loading Gaussian splat (SPZ) files",
   "main": "dist/spz.js",
   "types": "dist/spz.d.ts",
